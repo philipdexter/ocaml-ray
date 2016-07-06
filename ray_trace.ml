@@ -1,3 +1,18 @@
+let num_domains = 50
+let num_threads = 49
+
+module Scheduler = Sched_ws_affine.Make(struct let num_domains = num_domains end)
+module Reagents = Reagents.Make(Scheduler)
+module Sync = Reagents_sync.Make(Reagents)
+module Data = Reagents_data.Make(Reagents)
+module CDL = Sync.Countdown_latch
+module MS = Data.MichaelScott_queue
+open Scheduler
+open Reagents
+
+
+
+
 (* Generic maths *)
 let delta = sqrt epsilon_float and pi = 4. *. atan 1.
 let sqr x = x *. x
@@ -101,14 +116,14 @@ let rec ray_trace weight light ray scene = match intersect ray scene with
           r', g', b' -> (s +. r) *. r', (s +. g) *. g', (s +. b) *. b'
 
 exception Finished
-let () =
+let main () =
   (* Get the level of detail from the command line *)
   let level = match Sys.argv with
       [| _; l |] -> int_of_string l
     | _ -> 6 in
 
   (* Initialise OpenGL and glut *)
-  let width = ref 768 and height = ref 768 in
+  let width = 768 and height = 768 in
 
   (* Define the scene *)
   let light = unitise (vec3 (-1.) (-3.) 2.) in
@@ -151,54 +166,86 @@ let () =
     aux level 1. (translate (vec3 0. 1. 0.)) in
   Printf.printf "Created %d objects\n" !count;
 
-  let x, y = ref 0, ref 0 in
-  let pixels = ref [] in
-  let last = ref 0. and started = ref 0. in
+  let work x' y' width' =
+    let x = ref x' in
+    let y = ref y' in
+    let pixels = ref [] in
+    let started = ref 0. in
 
+    Printf.eprintf "starting with %d %d\n" x' width' ;
 
-  (* Render incrementally when idle *)
-  let idle () =
-    if !y >= !height then begin
-      Printf.printf "Took: %fs\n" (Sys.time () -. !started);
-      started := Sys.time ();
-      raise Finished
-    end else begin
-      let ray =
-        let w, h = float !width, float !height in
-        let o = vec3 0. 2. (-6.) in
-        let x, y = float !x -. 0.5 *. w, float !y -. 0.5 *. h in
-        let d = unitise (vec3 x y (max w h)) in
-        let d = transform (rot_x (-9.)) d in
-        { origin = o ; direction = d } in
+    (* Render incrementally when idle *)
+    let idle () =
+      if !y >= height then begin
+        Printf.printf "Took: %fs\n" (Sys.time () -. !started);
+        started := Sys.time ();
+        raise Finished
+      end else begin
+        let ray =
+          let w, h = float width, float height in
+          let o = vec3 0. 2. (-6.) in
+          let x, y = float !x -. 0.5 *. w, float !y -. 0.5 *. h in
+          let d = unitise (vec3 x y (max w h)) in
+          let d = transform (rot_x (-9.)) d in
+          { origin = o ; direction = d } in
 
-      pixels := (!x, !y, ray_trace 1. light ray scene) :: !pixels;
+        pixels := (!x, !y, ray_trace 1. light ray scene) :: !pixels;
 
-      x := (1 + !x) mod !width;
-      if !x = 0 then incr y;
+        x := (1 + !x) mod width' ;
+        if !x = 0 then ( x := x' ; incr y ) ;
+      end in
+    (try
+      while true do idle () done ;
+    with Finished -> ()) ;
 
-      if Sys.time () > !last +. 0.2 then begin
-        last := Sys.time ();
-      end;
-    end in
+    Printf.eprintf "done with %d %d\n" x' width' ;
+    flush stderr ;
+
+    !pixels
+  in
 
   let open Images in
 
-  let img = Rgb24.create !width !height in
+  let (//) a b = int_of_float (float_of_int a /. float_of_int b) in
+
+  let cdl = CDL.create num_threads in
+  let queue = MS.create () in
+
+  for i = 0 to (num_threads-1) do
+    fork_on (i mod num_domains + 1) (fun () ->
+        let pixels = work (width // num_threads * i ) 0 (width // num_threads * i + width // num_threads) in
+        run (MS.push queue) pixels ;
+        Printf.eprintf "done on %d\n" i ;
+        flush stderr ;
+        run (CDL.count_down cdl) ())
+  done ;
+
+
+
 
   (* Display the current render *)
   let display () =
-    let aux (x, y, (r, g, b)) =
-      let f x = clamp 0 255 (int_of_float (255. *. x)) in
-      Rgb24.set img (!width-x-1) (!height-y-1) {r = f r ; g = f g ; b = f b } in
-      (* GlDraw.color (f r, f g, f b); *)
-      (* GlDraw.vertex2 (float x, float y) in *)
-    List.iter aux !pixels;
-    last := Sys.time () in
-
-  try
-    while true do idle () done
-  with Finished -> () ;
+    let img = Rgb24.create width height in
+    let rec loop i =
+      if i = 0 then
+        Tiff.save "ray.tiff" [] (Images.Rgb24 img)
+      else
+        begin
+          match run (MS.try_pop queue) () with
+          | None -> loop i
+          | Some pixels ->
+            begin
+              let aux (x, y, (r, g, b)) =
+                let f x = clamp 0 255 (int_of_float (255. *. x)) in
+                Rgb24.set img (width-x-1) (height-y-1) {r = f r ; g = f g ; b = f b } in
+              List.iter aux pixels ;
+              loop (i-1)
+            end
+        end in
+    loop num_threads in
 
   display () ;
 
-  Tiff.save "ray.tiff" [] (Images.Rgb24 img) ;
+  run (CDL.await cdl) ()
+
+let () = Scheduler.run main
