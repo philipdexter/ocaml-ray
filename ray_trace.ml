@@ -174,12 +174,10 @@ let main () =
     let pixels = ref [] in
     let started = ref 0. in
 
-    Printf.eprintf "starting with %d %d\n" x' width' ;
 
     (* Render incrementally when idle *)
     let idle () =
       if !y >= height then begin
-        Printf.printf "Took: %fs\n" (Sys.time () -. !started);
         started := Sys.time ();
         raise Finished
       end else begin
@@ -200,9 +198,6 @@ let main () =
       while true do idle () done ;
     with Finished -> ()) ;
 
-    Printf.eprintf "done with %d %d\n" x' width' ;
-    flush stderr ;
-
     !pixels
   in
 
@@ -217,8 +212,6 @@ let main () =
     fork_on (i mod num_domains + 1) (fun () ->
         let pixels = work (width // num_threads * i ) 0 (width // num_threads * i + width // num_threads) in
         run (MS.push queue) pixels ;
-        Printf.eprintf "done on %d\n" i ;
-        flush stderr ;
         run (CDL.count_down cdl) ())
   done ;
 
