@@ -1,0 +1,7 @@
+S .
+S lib
+S data
+S test
+S sync
+B _build
+PKG camlimages
