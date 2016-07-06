@@ -1,7 +1,7 @@
 (* based on a ray tracer found at http://www.ffconsultancy.com/ocaml/ray_tracer/index.html *)
 
-let num_domains = 50
-let num_threads = 49
+let num_domains = 4
+let num_threads = num_domains-1
 
 module Scheduler = Sched_ws_affine.Make(struct let num_domains = num_domains end)
 module Reagents = Reagents.Make(Scheduler)
