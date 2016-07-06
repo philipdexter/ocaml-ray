@@ -1,14 +1,12 @@
 (* based on a ray tracer found at http://www.ffconsultancy.com/ocaml/ray_tracer/index.html *)
 
-let num_domains = 4
+let num_domains = 3
 let num_threads = num_domains-1
 
 module Scheduler = Sched_ws_affine.Make(struct let num_domains = num_domains end)
 module Reagents = Reagents.Make(Scheduler)
 module Sync = Reagents_sync.Make(Reagents)
-module Data = Reagents_data.Make(Reagents)
 module CDL = Sync.Countdown_latch
-module MS = Data.MichaelScott_queue
 open Scheduler
 open Reagents
 
@@ -206,41 +204,33 @@ let main () =
   let (//) a b = int_of_float (float_of_int a /. float_of_int b) in
 
   let cdl = CDL.create num_threads in
-  let queue = MS.create () in
+
+  let img = Rgb24.create width height in
+
+  let img_ref = Ref.mk_ref img in
+
+  let start_time = Unix.gettimeofday () in
 
   for i = 0 to (num_threads-1) do
     fork_on (i mod num_domains + 1) (fun () ->
+        let start_time = Unix.gettimeofday () in
         let pixels = work (width // num_threads * i ) 0 (width // num_threads * i + width // num_threads) in
-        run (MS.push queue) pixels ;
+        let aux (x, y, (r, g, b)) =
+          run (Ref.upd img_ref (fun img () ->
+              let f x = clamp 0 255 (int_of_float (255. *. x)) in
+              Rgb24.set img (width-x-1) (height-y-1) {r = f r ; g = f g ; b = f b } ; Some (img,()))) () in
+        List.iter aux pixels ;
+        let end_time = Unix.gettimeofday () in
+        Printf.printf ">> took %f\n" (end_time -. start_time) ;
         run (CDL.count_down cdl) ())
   done ;
 
+  run (CDL.await cdl) () ;
 
+  let end_time = Unix.gettimeofday () in
+  Printf.printf "<> took %f\n" (end_time -. start_time) ;
 
-
-  (* Display the current render *)
-  let display () =
-    let img = Rgb24.create width height in
-    let rec loop i =
-      if i = 0 then
-        Tiff.save "ray.tiff" [] (Images.Rgb24 img)
-      else
-        begin
-          match run (MS.try_pop queue) () with
-          | None -> loop i
-          | Some pixels ->
-            begin
-              let aux (x, y, (r, g, b)) =
-                let f x = clamp 0 255 (int_of_float (255. *. x)) in
-                Rgb24.set img (width-x-1) (height-y-1) {r = f r ; g = f g ; b = f b } in
-              List.iter aux pixels ;
-              loop (i-1)
-            end
-        end in
-    loop num_threads in
-
-  display () ;
-
-  run (CDL.await cdl) ()
+  run (Ref.upd img_ref (fun img () ->
+      Tiff.save "ray.tiff" [] (Images.Rgb24 img) ; Some (img,()))) ()
 
 let () = Scheduler.run main
