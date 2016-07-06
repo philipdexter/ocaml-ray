@@ -1,3 +1,5 @@
+(* based on a ray tracer found at http://www.ffconsultancy.com/ocaml/ray_tracer/index.html *)
+
 let num_domains = 50
 let num_threads = 49
 
